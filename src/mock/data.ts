@@ -3,6 +3,7 @@
  * Kick-off times are relative to "now" so the demo always shows a mix of
  * finished, locked and open matches.
  */
+import type { BetType, Outcome } from '../lib/scoring'
 import type { Match, Player, Prediction, Team } from '../types/domain'
 
 const HOUR = 3_600_000
@@ -24,19 +25,22 @@ const T = {
   m05: team('m05', 'Mainz 05', 'M05'),
 }
 
-const QUESTION = 'Mehr als 2,5 Tore?'
+type Result = [number, number] | Outcome | boolean
 
-/** Score bet by default; pass `question` for a Yes/No bet. `result` is [home, away] or, for Yes/No, a boolean. */
+/**
+ * Builds a demo match. `type` picks the bet type; `result` is [home, away] for 'score',
+ * '1'/'X'/'2' for 'outcome'/'winner', true/false for 'yesno'. No result = not finished.
+ */
 function match(
   id: string,
   home: Team,
   away: Team,
   kickoffInHours: number,
-  result?: [number, number] | boolean,
+  type: BetType,
+  result?: Result,
   question?: string,
 ): Match {
   const kickoff = at(kickoffInHours)
-  const isYesNo = question !== undefined
   return {
     id,
     competitionId: 'c1',
@@ -48,31 +52,33 @@ function match(
     homeTeam: home,
     awayTeam: away,
     status: result === undefined ? 'upcoming' : 'finished',
-    betType: isYesNo ? 'yesno' : 'score',
+    betType: type,
     question: question ?? null,
     homeScore: Array.isArray(result) ? result[0] : null,
     awayScore: Array.isArray(result) ? result[1] : null,
     answer: typeof result === 'boolean' ? result : null,
+    outcome: typeof result === 'string' ? result : null,
+    infoUrl: 'https://www.kicker.de/',
   }
 }
 
 export const matches: Match[] = [
   // Finished
-  match('m1', T.fcb, T.b04, -24 * 13, [2, 2]),
-  match('m2', T.bvb, T.rbl, -24 * 13, [3, 0]),
-  match('m3', T.scf, T.sge, -24 * 12, false, QUESTION),
-  match('m4', T.vfb, T.svw, -24 * 6, [0, 0]),
-  match('m5', T.bmg, T.koe, -24 * 6, [1, 3]),
-  match('m6', T.hsv, T.m05, -24 * 5, true, QUESTION),
+  match('m1', T.fcb, T.b04, -24 * 13, 'score', [2, 2]),
+  match('m2', T.bvb, T.rbl, -24 * 13, 'score', [3, 0]),
+  match('m3', T.scf, T.sge, -24 * 12, 'yesno', false, 'Gibt es eine rote Karte?'),
+  match('m4', T.vfb, T.svw, -24 * 6, 'outcome', 'X'),
+  match('m5', T.bmg, T.koe, -24 * 6, 'winner', '2'),
+  match('m6', T.hsv, T.m05, -24 * 5, 'yesno', true, 'Fallen mehr als 5 Tore?'),
   // Locked: kicked off, result pending
-  match('m7', T.b04, T.bvb, -1.2),
+  match('m7', T.b04, T.bvb, -1.2, 'score'),
   // Open
-  match('m8', T.fcb, T.bvb, 26),
-  match('m9', T.rbl, T.scf, 29, undefined, QUESTION),
-  match('m10', T.sge, T.vfb, 50),
-  match('m11', T.svw, T.bmg, 74),
-  match('m12', T.koe, T.hsv, 75, undefined, QUESTION),
-  match('m13', T.m05, T.fcb, 98),
+  match('m8', T.fcb, T.bvb, 26, 'score'),
+  match('m9', T.rbl, T.scf, 29, 'yesno', undefined, 'Wird der Trainer 5 Mal im TV gezeigt?'),
+  match('m10', T.sge, T.vfb, 50, 'outcome'),
+  match('m11', T.svw, T.bmg, 74, 'winner'),
+  match('m12', T.koe, T.hsv, 75, 'yesno', undefined, 'Fallen mehr als 3 Tore?'),
+  match('m13', T.m05, T.fcb, 98, 'score'),
 ]
 
 export const players: Player[] = [
@@ -109,14 +115,16 @@ function buildPredictions(): Prediction[] {
       }
       const home = goals()
       const away = goals()
-      const yesNo = m.betType === 'yesno'
+      const type = m.betType
+      const oneX2: Outcome[] = type === 'winner' ? ['1', '2'] : ['1', 'X', '2']
       out.push({
         id: `${m.id}-${p.id}`,
         matchId: m.id,
         playerId: p.id,
-        homeScore: yesNo ? null : home,
-        awayScore: yesNo ? null : away,
-        answer: yesNo ? rand() > 0.5 : null,
+        homeScore: type === 'score' ? home : null,
+        awayScore: type === 'score' ? away : null,
+        answer: type === 'yesno' ? rand() > 0.5 : null,
+        outcome: type === 'outcome' || type === 'winner' ? oneX2[Math.floor(rand() * oneX2.length)] : null,
         createdAt: at(-24 * 14),
       })
     }

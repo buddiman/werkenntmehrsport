@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { formatKickoff, timeLeft } from '../lib/format'
-import { pickLabel, resultLabel } from '../lib/labels'
+import { BET_TYPE_LABELS, pickLabel, pointsHint, resultLabel } from '../lib/labels'
+import type { Outcome as OutcomePick } from '../lib/scoring'
+import { linkLabel } from '../lib/url'
 import { effectiveStatus } from '../lib/matchStatus'
 import { useData } from '../data/context'
 import type { Match, Prediction } from '../types/domain'
@@ -19,45 +21,53 @@ function Team({ match, side }: { match: Match; side: 'home' | 'away' }) {
   )
 }
 
+const PICK_CAPTION = { '1': 'Heimsieg', X: 'Unentschieden', '2': 'Auswärtssieg' } as const
+
 function PredictionForm({ match, existing }: { match: Match; existing?: Prediction }) {
-  const { savePrediction } = useData()
+  const { savePrediction, scoring } = useData()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [home, setHome] = useState(existing?.homeScore ?? 1)
   const [away, setAway] = useState(existing?.awayScore ?? 1)
   const [answer, setAnswer] = useState<boolean | null>(existing?.answer ?? null)
+  const [pick, setPick] = useState<OutcomePick | null>(existing?.outcome ?? null)
   const [saved, setSaved] = useState(false)
-  const isYesNo = match.betType === 'yesno'
+  const type = match.betType
+  const isPick = type === 'outcome' || type === 'winner'
 
   const touch = <T,>(set: (v: T) => void) => (v: T) => {
     set(v)
     setSaved(false)
   }
 
+  const missingChoice = (type === 'yesno' && answer === null) || (isPick && pick === null)
+
+  async function save() {
+    setBusy(true)
+    setError(null)
+    try {
+      await savePrediction(match.id, {
+        homeScore: type === 'score' ? home : null,
+        awayScore: type === 'score' ? away : null,
+        answer: type === 'yesno' ? answer : null,
+        outcome: isPick ? pick : null,
+      })
+      setSaved(true)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const bigButton = (active: boolean) =>
+    `rounded-xl py-4 font-display text-3xl font-extrabold uppercase transition active:scale-95 ${
+      active ? 'bg-lime-brand text-pitch-950' : 'bg-white/10 text-white/80'
+    }`
+
   return (
     <div className="mt-4 border-t border-white/10 pt-4">
-      {isYesNo ? (
-        <div>
-          <p className="mb-3 text-center font-semibold">
-            <span className="mr-1">❓</span>
-            {match.question}
-          </p>
-          <div className="grid grid-cols-2 gap-3">
-            {([true, false] as const).map((v) => (
-              <button
-                key={String(v)}
-                type="button"
-                onClick={() => touch(setAnswer)(v)}
-                className={`rounded-xl py-4 font-display text-3xl font-extrabold uppercase transition active:scale-95 ${
-                  answer === v ? 'bg-lime-brand text-pitch-950' : 'bg-white/10 text-white/80'
-                }`}
-              >
-                {v ? 'Ja' : 'Nein'}
-              </button>
-            ))}
-          </div>
-        </div>
-      ) : (
+      {type === 'score' && (
         <div className="flex items-center justify-center gap-5">
           <ScoreStepper value={home} onChange={touch(setHome)} label={`${match.homeTeam.name} Tore`} />
           <span className="font-display text-3xl text-white/40">:</span>
@@ -65,28 +75,32 @@ function PredictionForm({ match, existing }: { match: Match; existing?: Predicti
         </div>
       )}
 
-      <button
-        type="button"
-        className="btn-primary mt-4 w-full"
-        disabled={busy || (isYesNo && answer === null)}
-        onClick={async () => {
-          setBusy(true)
-          setError(null)
-          try {
-            await savePrediction(
-              match.id,
-              isYesNo
-                ? { homeScore: null, awayScore: null, answer }
-                : { homeScore: home, awayScore: away, answer: null },
-            )
-            setSaved(true)
-          } catch (e) {
-            setError(e instanceof Error ? e.message : String(e))
-          } finally {
-            setBusy(false)
-          }
-        }}
-      >
+      {type === 'yesno' && (
+        <div className="grid grid-cols-2 gap-3">
+          {([true, false] as const).map((v) => (
+            <button key={String(v)} type="button" onClick={() => touch(setAnswer)(v)} className={bigButton(answer === v)}>
+              {v ? 'Ja' : 'Nein'}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {isPick && (
+        <div className={`grid gap-3 ${type === 'outcome' ? 'grid-cols-3' : 'grid-cols-2'}`}>
+          {(type === 'outcome' ? (['1', 'X', '2'] as const) : (['1', '2'] as const)).map((v) => (
+            <button key={v} type="button" onClick={() => touch(setPick)(v)} className={bigButton(pick === v)}>
+              {v}
+              <span className="block font-sans text-[11px] font-semibold normal-case tracking-normal opacity-70">
+                {v === '1' ? match.homeTeam.shortName : v === '2' ? match.awayTeam.shortName : PICK_CAPTION.X}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      <p className="mt-3 text-center text-xs text-white/40">{pointsHint(type, scoring)}</p>
+
+      <button type="button" className="btn-primary mt-3 w-full" disabled={busy || missingChoice} onClick={() => void save()}>
         {saved ? (
           <>
             <Icon name="check" className="size-4" /> Gespeichert
@@ -141,6 +155,12 @@ export function MatchCard({ match, editable = true }: { match: Match; editable?:
         <StatusPill status={status} />
       </header>
 
+      <p className="mb-3 text-center">
+        <span className="rounded-full bg-white/10 px-2.5 py-0.5 text-[11px] font-semibold text-white/70">
+          {BET_TYPE_LABELS[match.betType]}
+        </span>
+      </p>
+
       <div className="flex items-center gap-2">
         <Team match={match} side="home" />
         <div className="w-20 shrink-0 text-center font-display text-4xl font-extrabold">
@@ -152,6 +172,19 @@ export function MatchCard({ match, editable = true }: { match: Match; editable?:
         </div>
         <Team match={match} side="away" />
       </div>
+
+      {match.infoUrl && (
+        <p className="mt-3 text-center">
+          <a
+            href={match.infoUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs font-semibold text-lime-brand underline-offset-2 hover:underline"
+          >
+            📊 Statistiken auf {linkLabel(match.infoUrl)} ↗
+          </a>
+        </p>
+      )}
 
       {match.betType === 'yesno' && (
         <p className="mt-3 text-center text-xs font-semibold text-lime-brand">❓ {match.question}</p>

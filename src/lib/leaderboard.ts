@@ -37,8 +37,8 @@ export function buildLeaderboard(
       count += 1
       points += score.points
       if (score.exact) exactPredictions += 1
-      // "Correct results" also counts correct Yes/No answers.
-      if (score.correctResult || score.correctAnswer) correctResults += 1
+      // "Correct results" counts right tendencies, picks and answers.
+      if (score.correct) correctResults += 1
     }
     return { player, points, exactPredictions, correctResults, predictions: count }
   })

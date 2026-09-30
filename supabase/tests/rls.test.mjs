@@ -204,7 +204,7 @@ await test('a finished match needs a result', async () => {
   await rejects(() => as('authenticated', admin, () =>
     q(`update public.matches set status = 'finished' where id = $1`, [mScore])), /matches_finished_has_result/, 'no result')
 })
-await test('finalizing awards points: exact 3, difference 2, result 2, wrong 0, yes/no 2', async () => {
+await test('finalizing awards points: exact 3, difference 2, tendency 1, wrong 0, yes/no 2', async () => {
   await as('authenticated', admin, async () => {
     await q(`update public.matches set status='finished', home_score=2, away_score=0 where id = $1`, [mScore])
     await q(`update public.matches set status='finished', answer=true where id = $1`, [mYesNo])
@@ -221,7 +221,7 @@ await test('finalizing awards points: exact 3, difference 2, result 2, wrong 0, 
     'Admin/score': 0, // 0:1 vs 2:0 -> wrong
     'Bob/score': 3, 'Bob/yesno': 2, // exact; correct answer
     'Cara/score': 2, 'Cara/yesno': 0, // 3:1 has the same goal difference; wrong answer
-    'Dan/score': 2, // 1:0 has the right result only
+    'Dan/score': 1, // 1:0 vs 2:0: right tendency only
   })
   assert.equal(rows.find((r) => r.name === 'Bob' && r.type === 'score').is_exact, true)
 })
@@ -232,7 +232,7 @@ await test('leaderboard totals and ranking', async () => {
   assert.deepEqual(rows, [
     { display_name: 'Bob', total_points: 5, exact_predictions: 1, correct_results: 2, predictions: 2, rank: 1 },
     { display_name: 'Cara', total_points: 2, exact_predictions: 0, correct_results: 1, predictions: 2, rank: 2 },
-    { display_name: 'Dan', total_points: 2, exact_predictions: 0, correct_results: 1, predictions: 1, rank: 2 },
+    { display_name: 'Dan', total_points: 1, exact_predictions: 0, correct_results: 1, predictions: 1, rank: 3 },
     { display_name: 'Admin', total_points: 0, exact_predictions: 0, correct_results: 0, predictions: 1, rank: 4 },
   ])
 })
@@ -248,6 +248,82 @@ await test('changing the scoring rules re-scores finished matches', async () => 
   const [{ points }] = await q(`select ps.points from public.prediction_scores ps join public.predictions p on p.id = ps.prediction_id
                                 where p.player_id = $1 and p.match_id = $2`, [bob, mScore])
   assert.equal(points, 5)
+})
+
+console.log('1X2 and winner bets')
+const matchOf = async (home, away, type) =>
+  (await q(
+    `insert into public.matches (competition_id, season_id, home_team_id, away_team_id, kickoff_at, bet_type)
+     values ($1, $2, $3, $4, now() + interval '3 days', $5) returning id`,
+    [competition, season, home, away, type],
+  ))[0].id
+const mOutcome = await matchOf(t2, t1, 'outcome')
+const mWinner = await matchOf(t4, t3, 'winner')
+const pick = (uid, m, o) =>
+  q(`insert into public.predictions (match_id, player_id, outcome) values ($1, $2, $3)`, [m, uid, o])
+
+await test('1X2 and winner picks are accepted; wrong kinds of picks are rejected', async () => {
+  await as('authenticated', bob, () => pick(bob, mOutcome, 'X'))
+  await as('authenticated', cara, () => pick(cara, mOutcome, '1'))
+  await as('authenticated', dan, () => pick(dan, mOutcome, 'X'))
+  await as('authenticated', bob, () => pick(bob, mWinner, '1'))
+  await as('authenticated', cara, () => pick(cara, mWinner, '2'))
+  await rejects(() => as('authenticated', dan, () => pick(dan, mWinner, 'X')), /needs a winner pick/, 'draw on winner bet')
+  await rejects(() => as('authenticated', admin, () => pick(admin, mOutcome, '3')), /check constraint/, 'invalid pick')
+  await rejects(() => as('authenticated', admin, () => pickScore(admin, 1, 1, mOutcome)), /needs a 1\/X\/2 pick/, 'score on 1X2 match')
+})
+await test('match shape is enforced for the new bet types', async () => {
+  await rejects(() => q(`update public.matches set outcome = 'X' where id = $1`, [mWinner]), /matches_bet_shape/, 'draw result on winner match')
+  await rejects(() => q(`update public.matches set home_score = 1, away_score = 0 where id = $1`, [mOutcome]), /matches_bet_shape/, 'score result on 1X2 match')
+  await rejects(() => as('authenticated', admin, () => q(`update public.matches set status = 'finished' where id = $1`, [mOutcome])), /matches_finished_has_result/, 'no result')
+})
+
+await q(`update public.matches set kickoff_at = now() - interval '1 hour', prediction_deadline = now() - interval '1 hour'
+         where id in ($1, $2)`, [mOutcome, mWinner])
+
+await test('finalizing 1X2 and winner matches awards 2 points for a correct pick', async () => {
+  await as('authenticated', admin, async () => {
+    await q(`update public.matches set status = 'finished', outcome = 'X' where id = $1`, [mOutcome])
+    await q(`update public.matches set status = 'finished', outcome = '1' where id = $1`, [mWinner])
+  })
+  const rows = await q(`select pl.display_name as name, m.bet_type as type, ps.points, ps.is_exact
+    from public.prediction_scores ps
+    join public.predictions p on p.id = ps.prediction_id
+    join public.profiles pl on pl.id = p.player_id
+    join public.matches m on m.id = p.match_id
+    where m.bet_type in ('outcome', 'winner') order by name, type`)
+  assert.deepEqual(
+    rows.map((r) => `${r.name}/${r.type}=${r.points}`),
+    ['Bob/outcome=2', 'Bob/winner=2', 'Cara/outcome=0', 'Cara/winner=0', 'Dan/outcome=2'],
+  )
+  assert.ok(rows.every((r) => r.is_exact === false))
+})
+await test('the new scoring values are configurable', async () => {
+  await as('authenticated', admin, () => q(`update public.scoring_config set correct_outcome = 4, correct_winner = 5`))
+  const pts = await q(`select m.bet_type as type, ps.points from public.prediction_scores ps
+    join public.predictions p on p.id = ps.prediction_id join public.matches m on m.id = p.match_id
+    where p.player_id = $1 and m.bet_type in ('outcome', 'winner') order by type`, [bob])
+  assert.deepEqual(pts, [{ type: 'outcome', points: 4 }, { type: 'winner', points: 5 }])
+})
+
+console.log('Match link')
+await test('a match can have an http(s) link; other schemes and junk are rejected', async () => {
+  await as('authenticated', admin, () =>
+    q(`update public.matches set info_url = 'https://www.kicker.de/some/path?a=1' where id = $1`, [mScore]))
+  const [m] = await as('authenticated', bob, () => q(`select info_url from public.matches where id = $1`, [mScore]))
+  assert.equal(m.info_url, 'https://www.kicker.de/some/path?a=1')
+  for (const bad of ['javascript:alert(1)', 'ftp://x.de/a', 'https://a b', 'kicker.de', '']) {
+    await rejects(() => q(`update public.matches set info_url = $2 where id = $1`, [mScore, bad]), /matches_info_url_is_http/, `bad link "${bad}"`)
+  }
+  assert.equal(await as('authenticated', bob, () => affected(`update public.matches set info_url = 'https://evil.example' where id = $1`, [mScore])), 0)
+})
+
+console.log('Leagues')
+await test('only admins can create leagues (used by the import)', async () => {
+  await rejects(() => as('authenticated', bob, () => q(`insert into public.competitions (name) values ('DFB-Pokal')`)), /row-level security/, 'player creates league')
+  const rows = await as('authenticated', admin, () => q(`insert into public.competitions (name) values ('DFB-Pokal') returning name`))
+  assert.deepEqual(rows, [{ name: 'DFB-Pokal' }])
+  await rejects(() => as('authenticated', admin, () => q(`insert into public.competitions (name) values ('DFB-Pokal')`)), /duplicate key/, 'duplicate league')
 })
 
 console.log(`\n${passed} tests passed`)

@@ -48,7 +48,7 @@ export function DemoProvider({ children }: { children: ReactNode }) {
           ? {
               points: score.points,
               isExact: score.exact,
-              isCorrect: score.correctResult || score.correctAnswer,
+              isCorrect: score.correct,
             }
           : null
       },

@@ -3,7 +3,7 @@
  * the data providers in src/data map database rows to these types. Dates are ISO-8601 strings (UTC) as returned by Postgres.
  */
 
-import type { BetType } from '../lib/scoring'
+import type { BetType, Outcome } from '../lib/scoring'
 
 export type MatchStatus = 'upcoming' | 'locked' | 'finished'
 
@@ -34,23 +34,26 @@ export interface Match {
   status: MatchStatus
   /** Exactly one bet type per match. */
   betType: BetType
-  /** Yes/No question, set only when betType is 'yesno', e.g. "Over 2.5 goals?" */
+  /** Yes/No question text, set only when betType is 'yesno', e.g. "Gibt es eine rote Karte?" */
   question: string | null
-  /** Actual result. homeScore/awayScore for 'score' matches, answer for 'yesno' matches. */
+  /** Actual result: homeScore/awayScore ('score'), outcome ('outcome' 1/X/2, 'winner' 1/2), answer ('yesno'). */
   homeScore: number | null
   awayScore: number | null
   answer: boolean | null
+  outcome: Outcome | null
+  /** Optional link with stats (Kicker, Flashscore, ...). */
+  infoUrl: string | null
 }
 
 export interface Prediction {
   id: string
   matchId: string
   playerId: string
-  /** Score bet: both set. Yes/No bet: both null. */
+  /** Exactly one kind of pick is set, depending on the match's bet type. */
   homeScore: number | null
   awayScore: number | null
-  /** Yes/No bet: set. Score bet: null. */
   answer: boolean | null
+  outcome: Outcome | null
   createdAt: string
 }
 

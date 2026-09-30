@@ -5,20 +5,26 @@ import { StatusPill } from '../components/StatusPill'
 import { useData, type AdminApi } from '../data/context'
 import { formatKickoff, toLocalInput } from '../lib/format'
 import { importParsers } from '../lib/import'
+import { BET_TYPE_LABELS } from '../lib/labels'
 import { effectiveStatus } from '../lib/matchStatus'
-import type { BetType, ScoringConfig } from '../lib/scoring'
+import type { BetType, Outcome, ScoringConfig } from '../lib/scoring'
 import { useTask } from '../lib/useTask'
+import { isHttpUrl, linkLabel } from '../lib/url'
 import type { Match } from '../types/domain'
 
 type Tab = 'matches' | 'import' | 'scoring'
 const TAB_LABELS: Record<Tab, string> = { matches: 'Spiele', import: 'Import', scoring: 'Punkte' }
 
 const SCORING_LABELS: Record<keyof ScoringConfig, string> = {
-  exactScore: 'Exaktes Ergebnis',
-  goalDifference: 'Richtige Tordifferenz',
-  correctResult: 'Richtige Tendenz (1/X/2)',
-  correctAnswer: 'Richtige Ja/Nein-Antwort',
+  exactScore: 'Ergebnis-Tipp: exaktes Ergebnis',
+  goalDifference: 'Ergebnis-Tipp: richtige Tordifferenz',
+  correctTendency: 'Ergebnis-Tipp: richtige Tendenz',
+  correctOutcome: '1X2-Tipp: richtiger Tipp',
+  correctWinner: 'Sieger-Tipp: richtiger Tipp',
+  correctAnswer: 'Ja/Nein-Frage: richtige Antwort',
 }
+const SCORING_KEYS = Object.keys(SCORING_LABELS) as (keyof ScoringConfig)[]
+const BET_TYPES = Object.keys(BET_TYPE_LABELS) as BetType[]
 
 const inputClass = 'w-full rounded-xl bg-pitch-950 p-3 ring-1 ring-white/15 focus:outline-lime-brand'
 
@@ -98,10 +104,12 @@ function MatchRow({ admin, match: m, onEdit }: { admin: AdminApi; match: Match; 
   const [home, setHome] = useState(m.homeScore?.toString() ?? '')
   const [away, setAway] = useState(m.awayScore?.toString() ?? '')
   const [answer, setAnswer] = useState(m.answer === null ? '' : String(m.answer))
+  const [pick, setPick] = useState<string>(m.outcome ?? '')
 
   const isYesNo = m.betType === 'yesno'
+  const isPick = m.betType === 'outcome' || m.betType === 'winner'
   const num = (v: string) => (/^\d{1,2}$/.test(v) ? Number(v) : null)
-  const complete = isYesNo ? answer !== '' : num(home) !== null && num(away) !== null
+  const complete = isYesNo ? answer !== '' : isPick ? pick !== '' : num(home) !== null && num(away) !== null
 
   return (
     <div className="card !p-3">
@@ -112,6 +120,7 @@ function MatchRow({ admin, match: m, onEdit }: { admin: AdminApi; match: Match; 
           </div>
           <div className="text-xs text-white/50">
             {formatKickoff(m.kickoff)}
+            {` · ${BET_TYPE_LABELS[m.betType]}`}
             {isYesNo && ` · ❓ ${m.question}`}
           </div>
         </div>
@@ -119,7 +128,19 @@ function MatchRow({ admin, match: m, onEdit }: { admin: AdminApi; match: Match; 
       </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        {isYesNo ? (
+        {isPick ? (
+          <select
+            value={pick}
+            onChange={(e) => setPick(e.target.value)}
+            aria-label="Ergebnis"
+            className="rounded-lg bg-pitch-950 px-3 py-1.5 font-bold ring-1 ring-white/15"
+          >
+            <option value="">Ergebnis …</option>
+            <option value="1">1 (Heim)</option>
+            {m.betType === 'outcome' && <option value="X">X (Unentschieden)</option>}
+            <option value="2">2 (Gast)</option>
+          </select>
+        ) : isYesNo ? (
           <select
             value={answer}
             onChange={(e) => setAnswer(e.target.value)}
@@ -155,9 +176,10 @@ function MatchRow({ admin, match: m, onEdit }: { admin: AdminApi; match: Match; 
           onClick={() =>
             run(() =>
               admin.finalizeMatch(m.id, {
-                homeScore: isYesNo ? null : num(home),
-                awayScore: isYesNo ? null : num(away),
+                homeScore: m.betType === 'score' ? num(home) : null,
+                awayScore: m.betType === 'score' ? num(away) : null,
                 answer: isYesNo ? answer === 'true' : null,
+                outcome: isPick ? (pick as Outcome) : null,
               }),
             )
           }
@@ -197,10 +219,12 @@ function MatchForm({ admin, match, onDone }: { admin: AdminApi; match?: Match; o
   const [kickoff, setKickoff] = useState(match ? toLocalInput(match.kickoff) : '')
   const [betType, setBetType] = useState<BetType>(match?.betType ?? 'score')
   const [question, setQuestion] = useState(match?.question ?? '')
+  const [infoUrl, setInfoUrl] = useState(match?.infoUrl ?? '')
 
   async function submit(e: FormEvent) {
     e.preventDefault()
     const input = {
+      infoUrl: infoUrl.trim() || null,
       competitionId,
       homeTeamName: home.trim(),
       awayTeamName: away.trim(),
@@ -209,6 +233,9 @@ function MatchForm({ admin, match, onDone }: { admin: AdminApi; match?: Match; o
       question: betType === 'yesno' ? question.trim() : null,
     }
     const done = await run(async () => {
+      if (input.infoUrl && !isHttpUrl(input.infoUrl)) {
+        throw new Error('Der Link muss mit http:// oder https:// beginnen.')
+      }
       if (match) await admin.updateMatch(match.id, input)
       else await admin.createMatch(input)
       return true
@@ -240,12 +267,22 @@ function MatchForm({ admin, match, onDone }: { admin: AdminApi; match?: Match; o
         <input type="datetime-local" value={kickoff} onChange={(e) => setKickoff(e.target.value)} required className={`${inputClass} mt-1`} />
       </label>
       <select value={betType} onChange={(e) => setBetType(e.target.value as BetType)} className={inputClass}>
-        <option value="score">Tipp auf das Ergebnis</option>
-        <option value="yesno">Ja/Nein-Frage</option>
+        {BET_TYPES.map((t) => (
+          <option key={t} value={t}>
+            {BET_TYPE_LABELS[t]}
+          </option>
+        ))}
       </select>
       {betType === 'yesno' && (
-        <input value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="z. B. Mehr als 2,5 Tore?" required className={inputClass} />
+        <input value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="z. B. Gibt es eine rote Karte?" required className={inputClass} />
       )}
+      <input
+        type="url"
+        value={infoUrl}
+        onChange={(e) => setInfoUrl(e.target.value)}
+        placeholder="Link zu Statistiken, z. B. Kicker (optional)"
+        className={inputClass}
+      />
       <ErrorLine message={error} />
       <div className="flex gap-2">
         <button type="submit" className="btn-primary flex-1" disabled={busy}>
@@ -267,14 +304,20 @@ function ImportTab({ admin }: { admin: AdminApi }) {
   const [parserId, setParserId] = useState(importParsers[0].id)
   const parser = importParsers.find((p) => p.id === parserId)!
   const [text, setText] = useState('')
-  const [competitionId, setCompetitionId] = useState(competitions[0]?.id ?? '')
-  const [betType, setBetType] = useState<BetType>('score')
-  const [question, setQuestion] = useState('')
   const [message, setMessage] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
   const result = parser.parse(text)
+  const knownLeague = (name: string) => competitions.some((c) => c.name.toLowerCase() === name.toLowerCase())
 
-  const canImport =
-    result.matches.length > 0 && !!competitionId && (betType === 'score' || question.trim() !== '')
+  async function copyInstructions() {
+    try {
+      await navigator.clipboard.writeText(parser.instructions)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // Clipboard can be blocked; the text is selectable in the box anyway.
+    }
+  }
 
   async function doImport() {
     setMessage(null)
@@ -282,11 +325,13 @@ function ImportTab({ admin }: { admin: AdminApi }) {
       admin.importMatches(
         // The pasted local time is interpreted in this browser's timezone.
         result.matches.map((m) => ({ ...m, kickoff: new Date(m.kickoff).toISOString() })),
-        { competitionId, betType, question: betType === 'yesno' ? question.trim() : null },
       ),
     )
     if (r) {
-      setMessage(`${r.imported} importiert${r.skipped > 0 ? `, ${r.skipped} gab es schon` : ''}.`)
+      const parts = [`${r.imported} importiert`]
+      if (r.skipped > 0) parts.push(`${r.skipped} gab es schon`)
+      if (r.newCompetitions > 0) parts.push(`${r.newCompetitions} neue Liga angelegt`)
+      setMessage(`${parts.join(', ')}.`)
       setText('')
     }
   }
@@ -302,43 +347,62 @@ function ImportTab({ admin }: { admin: AdminApi }) {
           ))}
         </select>
       )}
-      <p className="text-xs text-white/50">
-        Format: <code className="text-lime-brand">JJJJ-MM-TT HH:mm | Heim | Gast</code>, ein Spiel pro Zeile.
-        Die Uhrzeit gilt in der Zeitzone deines Browsers.
-      </p>
+
+      <details open className="card !p-3">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-2">
+          <span className="label">Anleitung für eine KI (Spielliste erstellen lassen)</span>
+          <button
+            type="button"
+            className="btn-ghost !px-3 !py-1 text-xs"
+            onClick={(e) => {
+              e.preventDefault()
+              void copyInstructions()
+            }}
+          >
+            {copied ? 'Kopiert ✓' : 'Kopieren'}
+          </button>
+        </summary>
+        <pre className="mt-3 whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-white/70">
+          {parser.instructions}
+        </pre>
+      </details>
+
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
-        rows={6}
+        rows={8}
         spellCheck={false}
         placeholder={parser.example}
         className="w-full rounded-xl bg-pitch-950 p-3 font-mono text-sm ring-1 ring-white/15 focus:outline-lime-brand"
       />
-      <div className="grid grid-cols-2 gap-2">
-        <select value={competitionId} onChange={(e) => setCompetitionId(e.target.value)} className={inputClass}>
-          {competitions.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name}
-            </option>
-          ))}
-        </select>
-        <select value={betType} onChange={(e) => setBetType(e.target.value as BetType)} className={inputClass}>
-          <option value="score">Ergebnis-Tipp</option>
-          <option value="yesno">Ja/Nein-Frage</option>
-        </select>
-      </div>
-      {betType === 'yesno' && (
-        <input value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="Frage für alle importierten Spiele" className={inputClass} />
-      )}
+      <p className="text-xs text-white/50">
+        Die Uhrzeit gilt in der Zeitzone deines Browsers. Unbekannte Ligen werden neu angelegt. Spiele, die es schon
+        gibt, werden übersprungen (Link und Tipp-Art bleiben unverändert).
+      </p>
 
-      <div className="card space-y-2">
+      <div className="card space-y-3">
         <h3 className="label">Vorschau · {result.matches.length} gültig</h3>
         {result.matches.map((m, i) => (
-          <div key={i} className="flex justify-between gap-2 text-sm">
-            <span className="truncate">
-              {m.homeTeam} – {m.awayTeam}
-            </span>
-            <span className="shrink-0 text-white/50">{m.kickoff.replace('T', ' ')}</span>
+          <div key={i} className="text-sm">
+            <div className="flex justify-between gap-2">
+              <span className="truncate font-semibold">
+                {m.homeTeam} – {m.awayTeam}
+              </span>
+              <span className="shrink-0 text-white/50">{m.kickoff.replace('T', ' ')}</span>
+            </div>
+            <div className="mt-1 flex flex-wrap gap-1.5 text-[11px]">
+              <span
+                className={`rounded-full px-2 py-0.5 ${
+                  knownLeague(m.competition) ? 'bg-white/10 text-white/70' : 'bg-amber-400/15 text-amber-300'
+                }`}
+              >
+                {m.competition}
+                {!knownLeague(m.competition) && ' (neu)'}
+              </span>
+              <span className="rounded-full bg-white/10 px-2 py-0.5 text-white/70">{BET_TYPE_LABELS[m.betType]}</span>
+              {m.question && <span className="rounded-full bg-white/10 px-2 py-0.5 text-white/70">❓ {m.question}</span>}
+              {m.infoUrl && <span className="rounded-full bg-white/10 px-2 py-0.5 text-lime-brand">📊 {linkLabel(m.infoUrl)}</span>}
+            </div>
           </div>
         ))}
         {result.errors.map((e) => (
@@ -349,9 +413,16 @@ function ImportTab({ admin }: { admin: AdminApi }) {
       </div>
       <ErrorLine message={error} />
       {message && <p className="rounded-lg bg-lime-brand/10 px-3 py-2 text-sm text-lime-brand">{message}</p>}
-      <button className="btn-primary w-full" disabled={busy || !canImport} onClick={() => void doImport()}>
+      <button
+        className="btn-primary w-full"
+        disabled={busy || result.matches.length === 0 || result.errors.length > 0}
+        onClick={() => void doImport()}
+      >
         {result.matches.length} Spiele importieren
       </button>
+      {result.errors.length > 0 && (
+        <p className="text-center text-xs text-red-300">Bitte erst die fehlerhaften Zeilen korrigieren.</p>
+      )}
     </div>
   )
 }
@@ -361,24 +432,18 @@ function ImportTab({ admin }: { admin: AdminApi }) {
 function ScoringTab({ admin }: { admin: AdminApi }) {
   const { scoring } = useData()
   const { busy, error, run } = useTask()
-  const [values, setValues] = useState<Record<keyof ScoringConfig, string>>({
-    exactScore: String(scoring.exactScore),
-    goalDifference: String(scoring.goalDifference),
-    correctResult: String(scoring.correctResult),
-    correctAnswer: String(scoring.correctAnswer),
-  })
+  const [values, setValues] = useState<Record<string, string>>(() =>
+    Object.fromEntries(SCORING_KEYS.map((k) => [k, String(scoring[k])])),
+  )
   const [saved, setSaved] = useState(false)
-  const valid = Object.values(values).every((v) => /^\d{1,3}$/.test(v))
+  const valid = SCORING_KEYS.every((k) => /^\d{1,3}$/.test(values[k]))
 
   async function save() {
     setSaved(false)
     const ok = await run(async () => {
-      await admin.updateScoring({
-        exactScore: Number(values.exactScore),
-        goalDifference: Number(values.goalDifference),
-        correctResult: Number(values.correctResult),
-        correctAnswer: Number(values.correctAnswer),
-      })
+      const next = { ...scoring }
+      for (const k of SCORING_KEYS) next[k] = Number(values[k])
+      await admin.updateScoring(next)
       return true
     })
     if (ok) setSaved(true)
@@ -386,9 +451,9 @@ function ScoringTab({ admin }: { admin: AdminApi }) {
 
   return (
     <div className="card space-y-3">
-      {(Object.keys(SCORING_LABELS) as (keyof ScoringConfig)[]).map((key) => (
+      {SCORING_KEYS.map((key) => (
         <label key={key} className="flex items-center justify-between gap-3">
-          <span>{SCORING_LABELS[key]}</span>
+          <span className="text-sm">{SCORING_LABELS[key]}</span>
           <input
             inputMode="numeric"
             value={values[key]}
@@ -396,7 +461,7 @@ function ScoringTab({ admin }: { admin: AdminApi }) {
               setSaved(false)
               setValues({ ...values, [key]: e.target.value })
             }}
-            className="w-16 rounded-lg bg-pitch-950 py-1.5 text-center font-display text-2xl font-extrabold text-lime-brand ring-1 ring-white/15"
+            className="w-16 shrink-0 rounded-lg bg-pitch-950 py-1.5 text-center font-display text-2xl font-extrabold text-lime-brand ring-1 ring-white/15"
           />
         </label>
       ))}

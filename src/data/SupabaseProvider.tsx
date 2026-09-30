@@ -1,6 +1,6 @@
 import type { Session, SupabaseClient } from '@supabase/supabase-js'
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
-import type { ScoringConfig } from '../lib/scoring'
+import type { Outcome, ScoringConfig } from '../lib/scoring'
 import { shortNameFor } from '../lib/teams'
 import type {
   Competition,
@@ -30,6 +30,8 @@ interface MatchRow {
   home_score: number | null
   away_score: number | null
   answer: boolean | null
+  outcome: Outcome | null
+  info_url: string | null
   competition: { name: string }
   season: { name: string }
   home: TeamRow
@@ -42,6 +44,7 @@ interface PredictionRow {
   home_score: number | null
   away_score: number | null
   answer: boolean | null
+  outcome: Outcome | null
   created_at: string
 }
 interface ScoreRow { prediction_id: string; points: number; is_exact: boolean; is_correct: boolean }
@@ -56,7 +59,9 @@ interface LeaderboardRow {
 interface ScoringRow {
   exact_score: number
   goal_difference: number
-  correct_result: number
+  correct_tendency: number
+  correct_outcome: number
+  correct_winner: number
   correct_answer: number
 }
 
@@ -83,6 +88,8 @@ const toMatch = (r: MatchRow): Match => ({
   homeScore: r.home_score,
   awayScore: r.away_score,
   answer: r.answer,
+  outcome: r.outcome,
+  infoUrl: r.info_url,
 })
 const toPrediction = (r: PredictionRow): Prediction => ({
   id: r.id,
@@ -91,6 +98,7 @@ const toPrediction = (r: PredictionRow): Prediction => ({
   homeScore: r.home_score,
   awayScore: r.away_score,
   answer: r.answer,
+  outcome: r.outcome,
   createdAt: r.created_at,
 })
 
@@ -178,7 +186,9 @@ async function loadAll(supabase: SupabaseClient): Promise<Loaded> {
     scoring: {
       exactScore: scoring.exact_score,
       goalDifference: scoring.goal_difference,
-      correctResult: scoring.correct_result,
+      correctTendency: scoring.correct_tendency,
+      correctOutcome: scoring.correct_outcome,
+      correctWinner: scoring.correct_winner,
       correctAnswer: scoring.correct_answer,
     },
   }
@@ -253,6 +263,7 @@ export function SupabaseProvider({
       kickoff_at: input.kickoff,
       bet_type: input.betType,
       question: input.betType === 'yesno' ? input.question : null,
+      info_url: input.infoUrl,
     })
 
     const admin: AdminApi = {
@@ -282,33 +293,49 @@ export function SupabaseProvider({
                 home_score: result.homeScore,
                 away_score: result.awayScore,
                 answer: result.answer,
+                outcome: result.outcome,
               })
               .eq('id', id)
               .select('id'),
           )
           if (rows.length === 0) throw new Error('Das Ergebnis konnte nicht gespeichert werden.')
         }),
-      importMatches: async (rows, options) => {
+      importMatches: async (rows) => {
+        // Leagues: reuse by name (case-insensitive), create the ones we have not seen.
+        const competitionIds = new Map(data.competitions.map((c) => [c.name.toLowerCase(), c.id]))
+        const newNames = new Map<string, string>()
+        for (const r of rows) {
+          const name = r.competition.trim()
+          if (!competitionIds.has(name.toLowerCase())) newNames.set(name.toLowerCase(), name)
+        }
+        if (newNames.size > 0) {
+          const created = await ok<Competition[]>(
+            supabase.from('competitions').insert([...newNames.values()].map((name) => ({ name }))).select('id, name'),
+          )
+          created.forEach((c) => competitionIds.set(c.name.toLowerCase(), c.id))
+        }
+
         const teamIds = await resolveTeamIds(supabase, rows.flatMap((r) => [r.homeTeam, r.awayTeam]))
         const inserted = await ok<{ id: string }[]>(
           supabase
             .from('matches')
             .upsert(
               rows.map((r) => ({
-                competition_id: options.competitionId,
+                competition_id: competitionIds.get(r.competition.trim().toLowerCase())!,
                 season_id: data.seasonId,
                 home_team_id: teamIds.get(r.homeTeam.trim())!,
                 away_team_id: teamIds.get(r.awayTeam.trim())!,
                 kickoff_at: r.kickoff,
-                bet_type: options.betType,
-                question: options.betType === 'yesno' ? options.question : null,
+                bet_type: r.betType,
+                question: r.betType === 'yesno' ? r.question : null,
+                info_url: r.infoUrl,
               })),
               { onConflict: 'competition_id,season_id,home_team_id,away_team_id,kickoff_at', ignoreDuplicates: true },
             )
             .select('id'),
         )
         await load()
-        return { imported: inserted.length, skipped: rows.length - inserted.length }
+        return { imported: inserted.length, skipped: rows.length - inserted.length, newCompetitions: newNames.size }
       },
       updateScoring: (config) =>
         writing(async () => {
@@ -318,7 +345,9 @@ export function SupabaseProvider({
               .update({
                 exact_score: config.exactScore,
                 goal_difference: config.goalDifference,
-                correct_result: config.correctResult,
+                correct_tendency: config.correctTendency,
+                correct_outcome: config.correctOutcome,
+                correct_winner: config.correctWinner,
                 correct_answer: config.correctAnswer,
               })
               .eq('id', true)
@@ -348,7 +377,12 @@ export function SupabaseProvider({
             const rows = await ok<{ id: string }[]>(
               supabase
                 .from('predictions')
-                .update({ home_score: bet.homeScore, away_score: bet.awayScore, answer: bet.answer })
+                .update({
+                  home_score: bet.homeScore,
+                  away_score: bet.awayScore,
+                  answer: bet.answer,
+                  outcome: bet.outcome,
+                })
                 .eq('id', existing.id)
                 .select('id'),
             )
@@ -361,6 +395,7 @@ export function SupabaseProvider({
                 home_score: bet.homeScore,
                 away_score: bet.awayScore,
                 answer: bet.answer,
+                outcome: bet.outcome,
               }),
             )
           }

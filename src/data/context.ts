@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react'
-import type { BetType, Bet, ScoringConfig } from '../lib/scoring'
+import type { Bet, BetType, Outcome, ScoringConfig } from '../lib/scoring'
 import type {
   Competition,
   LeaderboardEntry,
@@ -18,19 +18,26 @@ export interface MatchInput {
   kickoff: string
   betType: BetType
   question: string | null
+  infoUrl: string | null
 }
 
 export interface MatchResult {
   homeScore: number | null
   awayScore: number | null
   answer: boolean | null
+  outcome: Outcome | null
 }
 
 export interface ImportRow {
   /** ISO timestamp (UTC). */
   kickoff: string
+  /** League name; matched to an existing competition by name (case-insensitive) or created. */
+  competition: string
+  betType: BetType
+  question: string | null
   homeTeam: string
   awayTeam: string
+  infoUrl: string | null
 }
 
 /** Admin writes. Only present for admins; the database enforces this again via RLS. */
@@ -40,10 +47,7 @@ export interface AdminApi {
   deleteMatch(id: string): Promise<void>
   /** Sets the result and marks the match finished; the database computes the points. */
   finalizeMatch(id: string, result: MatchResult): Promise<void>
-  importMatches(
-    rows: ImportRow[],
-    options: { competitionId: string; betType: BetType; question: string | null },
-  ): Promise<{ imported: number; skipped: number }>
+  importMatches(rows: ImportRow[]): Promise<{ imported: number; skipped: number; newCompetitions: number }>
   updateScoring(config: ScoringConfig): Promise<void>
 }
 
