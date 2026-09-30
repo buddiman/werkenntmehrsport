@@ -1,0 +1,49 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-pitch-950: #06140f;
+  --color-pitch-900: #0b2019;
+  --color-pitch-800: #113027;
+  --color-pitch-700: #1a4538;
+  --color-pitch-600: #2a6552;
+  --color-lime-brand: #b6f23a;
+  --color-gold: #ffc83d;
+  --font-display: 'Barlow Condensed', 'Arial Narrow', system-ui, sans-serif;
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    @apply bg-pitch-950 text-white antialiased;
+    background-image:
+      radial-gradient(60rem 30rem at 50% -10%, rgb(42 101 82 / 0.45), transparent 70%),
+      repeating-linear-gradient(90deg, rgb(255 255 255 / 0.015) 0 48px, transparent 48px 96px);
+    background-attachment: fixed;
+  }
+  /* Hide number input spinners; we use our own steppers. */
+  input[type='number']::-webkit-inner-spin-button,
+  input[type='number']::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+}
+
+/* Tailwind v4: custom classes are @utility blocks (they can be @apply-ed and variant-prefixed). */
+@utility card {
+  @apply rounded-2xl border border-white/10 bg-pitch-900/80 p-4 shadow-lg shadow-black/20 backdrop-blur;
+}
+@utility btn {
+  @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-40;
+}
+@utility btn-primary {
+  @apply btn bg-lime-brand text-pitch-950 hover:brightness-110;
+}
+@utility btn-ghost {
+  @apply btn border border-white/15 bg-white/5 text-white hover:bg-white/10;
+}
+@utility label {
+  @apply text-[11px] font-semibold uppercase tracking-wider text-white/50;
+}
